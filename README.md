@@ -24,6 +24,11 @@ This project demonstrates how to use CloudSim Plus for cloud computing simulatio
    mvn exec:java -Dexec.mainClass="CloudSimPlusExample"
    ```
 
+4. **Run the whole project**
+   ```bash
+   mvn compile exec:java
+   ```
+
 ## About CloudSim Plus
 
 CloudSim Plus is a modern, full-featured, highly extensible, easy-to-use and state-of-the-art Java 8+ simulation framework for cloud computing environments. It's a complete redesign and re-engineering of CloudSim 3.x.
