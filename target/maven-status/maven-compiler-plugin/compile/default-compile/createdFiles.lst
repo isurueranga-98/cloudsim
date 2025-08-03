@@ -1,1 +1,9 @@
+com\example\AdvancedMultiCloudSimulation$HostConfiguration.class
+com\example\AdvancedMultiCloudSimulation.class
 com\example\CloudSimPlusExample.class
+com\example\multicloud\CloudProvider.class
+com\example\multicloud\MultiCloudResourceManager$OptimizationStrategy.class
+com\example\multicloud\MultiCloudResourceManager.class
+com\example\MultiCloudSimulation.class
+com\example\multicloud\CloudProvider$ProviderType.class
+com\example\AdvancedMultiCloudSimulation$1.class
