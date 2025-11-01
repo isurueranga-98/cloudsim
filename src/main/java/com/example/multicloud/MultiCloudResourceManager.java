@@ -1,6 +1,5 @@
 package com.example.multicloud;
 
-import org.cloudsimplus.brokers.DatacenterBroker;
 import org.cloudsimplus.cloudlets.Cloudlet;
 import org.cloudsimplus.vms.Vm;
 import org.cloudsimplus.datacenters.Datacenter;
@@ -34,13 +33,11 @@ public class MultiCloudResourceManager {
     }
     
     private final List<CloudProvider> cloudProviders;
-    private final Map<DatacenterBroker, CloudProvider> brokerProviderMapping;
     private OptimizationStrategy currentStrategy;
     private final Map<String, Double> strategyWeights;
     
     public MultiCloudResourceManager(List<CloudProvider> cloudProviders) {
         this.cloudProviders = new ArrayList<>(cloudProviders);
-        this.brokerProviderMapping = new HashMap<>();
         this.currentStrategy = OptimizationStrategy.BALANCED;
         this.strategyWeights = initializeStrategyWeights();
     }
@@ -62,47 +59,50 @@ public class MultiCloudResourceManager {
         
         // Initialize allocation map
         cloudProviders.forEach(provider -> allocation.put(provider, new ArrayList<>()));
+
+        Map<CloudProvider, Integer> providerCapacity = computeProviderPeCapacity();
+        Map<CloudProvider, Integer> usedPes = initializeUsedPes();
         
         switch (currentStrategy) {
             case COST_MINIMIZATION:
-                allocateVmsByCost(vms, allocation);
+                allocateVmsByCost(vms, allocation, providerCapacity, usedPes);
                 break;
             case PERFORMANCE_MAXIMIZATION:
-                allocateVmsByPerformance(vms, allocation);
+                allocateVmsByPerformance(vms, allocation, providerCapacity, usedPes);
                 break;
             case LATENCY_OPTIMIZATION:
-                allocateVmsByLatency(vms, allocation);
+                allocateVmsByLatency(vms, allocation, providerCapacity, usedPes);
                 break;
             case BALANCED:
-                allocateVmsBalanced(vms, allocation);
+                allocateVmsBalanced(vms, allocation, providerCapacity, usedPes);
                 break;
             case GEOGRAPHIC_DISTRIBUTION:
-                allocateVmsGeographically(vms, allocation);
+                allocateVmsGeographically(vms, allocation, providerCapacity, usedPes);
                 break;
             case LOAD_BALANCING:
-                allocateVmsLoadBalanced(vms, allocation);
+                allocateVmsLoadBalanced(vms, allocation, providerCapacity, usedPes);
                 break;
         }
         
         return allocation;
     }
     
-    private void allocateVmsByCost(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsByCost(List<Vm> vms,
+                                   Map<CloudProvider, List<Vm>> allocation,
+                                   Map<CloudProvider, Integer> capacity,
+                                   Map<CloudProvider, Integer> usedPes) {
         // Sort providers by cost efficiency (highest first)
         List<CloudProvider> sortedProviders = cloudProviders.stream()
                 .sorted((p1, p2) -> Integer.compare(p2.getCostEfficiencyScore(), p1.getCostEfficiencyScore()))
                 .collect(Collectors.toList());
         
-        // Allocate VMs to most cost-effective providers first
-        int providerIndex = 0;
-        for (Vm vm : vms) {
-            CloudProvider provider = sortedProviders.get(providerIndex % sortedProviders.size());
-            allocation.get(provider).add(vm);
-            providerIndex++;
-        }
+        distributeVmsByPriority(vms, sortedProviders, allocation, capacity, usedPes);
     }
     
-    private void allocateVmsByPerformance(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsByPerformance(List<Vm> vms,
+                                          Map<CloudProvider, List<Vm>> allocation,
+                                          Map<CloudProvider, Integer> capacity,
+                                          Map<CloudProvider, Integer> usedPes) {
         // Sort providers by performance score (highest first)
         List<CloudProvider> sortedProviders = cloudProviders.stream()
                 .sorted((p1, p2) -> Integer.compare(p2.getPerformanceScore(), p1.getPerformanceScore()))
@@ -112,31 +112,31 @@ public class MultiCloudResourceManager {
         List<Vm> sortedVms = vms.stream()
                 .sorted((v1, v2) -> Double.compare(v2.getMips(), v1.getMips()))
                 .collect(Collectors.toList());
-        
-        int providerIndex = 0;
-        for (Vm vm : sortedVms) {
-            CloudProvider provider = sortedProviders.get(providerIndex % sortedProviders.size());
-            allocation.get(provider).add(vm);
-            providerIndex++;
-        }
+
+        distributeVmsByPriority(sortedVms, sortedProviders, allocation, capacity, usedPes);
     }
     
-    private void allocateVmsByLatency(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsByLatency(List<Vm> vms,
+                                      Map<CloudProvider, List<Vm>> allocation,
+                                      Map<CloudProvider, Integer> capacity,
+                                      Map<CloudProvider, Integer> usedPes) {
         // Sort providers by latency (lowest first)
         List<CloudProvider> sortedProviders = cloudProviders.stream()
                 .sorted(Comparator.comparingDouble(CloudProvider::getNetworkLatency))
                 .collect(Collectors.toList());
-        
-        // Prioritize edge and low-latency providers
-        int providerIndex = 0;
-        for (Vm vm : vms) {
-            CloudProvider provider = sortedProviders.get(providerIndex % sortedProviders.size());
-            allocation.get(provider).add(vm);
-            providerIndex++;
-        }
+
+        // Sort VMs so lighter workloads are allocated to low-capacity providers first
+        List<Vm> sortedVms = vms.stream()
+                .sorted(Comparator.comparingDouble(Vm::getMips))
+                .collect(Collectors.toList());
+
+        distributeVmsByPriority(sortedVms, sortedProviders, allocation, capacity, usedPes);
     }
     
-    private void allocateVmsBalanced(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsBalanced(List<Vm> vms,
+                                     Map<CloudProvider, List<Vm>> allocation,
+                                     Map<CloudProvider, Integer> capacity,
+                                     Map<CloudProvider, Integer> usedPes) {
         // Calculate composite score for each provider
         Map<CloudProvider, Double> providerScores = new HashMap<>();
         
@@ -156,42 +156,117 @@ public class MultiCloudResourceManager {
                 .collect(Collectors.toList());
         
         // Distribute VMs proportionally based on scores
-        int totalScore = providerScores.values().stream().mapToInt(Double::intValue).sum();
+        double totalScore = providerScores.values().stream().mapToDouble(Double::doubleValue).sum();
         int vmIndex = 0;
-        
+
         for (CloudProvider provider : sortedProviders) {
             double providerShare = providerScores.get(provider) / totalScore;
             int vmCount = Math.max(1, (int) (vms.size() * providerShare));
             
             for (int i = 0; i < vmCount && vmIndex < vms.size(); i++) {
-                allocation.get(provider).add(vms.get(vmIndex++));
+                Vm vm = vms.get(vmIndex++);
+                if (!addVmWithCapacity(provider, vm, allocation, capacity, usedPes)) {
+                    CloudProvider fallback = findProviderWithCapacity(sortedProviders, vm, capacity, usedPes, provider);
+                    if (fallback != null) {
+                        addVmWithCapacity(fallback, vm, allocation, capacity, usedPes);
+                    }
+                }
             }
         }
         
         // Allocate remaining VMs to best provider
         while (vmIndex < vms.size()) {
-            allocation.get(sortedProviders.get(0)).add(vms.get(vmIndex++));
+            Vm vm = vms.get(vmIndex++);
+            CloudProvider bestProvider = findProviderWithCapacity(sortedProviders, vm, capacity, usedPes, null);
+            if (bestProvider != null) {
+                addVmWithCapacity(bestProvider, vm, allocation, capacity, usedPes);
+            }
         }
     }
     
-    private void allocateVmsGeographically(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsGeographically(List<Vm> vms,
+                                           Map<CloudProvider, List<Vm>> allocation,
+                                           Map<CloudProvider, Integer> capacity,
+                                           Map<CloudProvider, Integer> usedPes) {
         // Distribute evenly across all providers for geographic diversity
-        int providerIndex = 0;
-        for (Vm vm : vms) {
-            CloudProvider provider = cloudProviders.get(providerIndex % cloudProviders.size());
-            allocation.get(provider).add(vm);
-            providerIndex++;
-        }
+        distributeVmsByPriority(vms, cloudProviders, allocation, capacity, usedPes);
     }
     
-    private void allocateVmsLoadBalanced(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
+    private void allocateVmsLoadBalanced(List<Vm> vms,
+                                         Map<CloudProvider, List<Vm>> allocation,
+                                         Map<CloudProvider, Integer> capacity,
+                                         Map<CloudProvider, Integer> usedPes) {
         // Simple round-robin allocation for load balancing
-        int providerIndex = 0;
+        distributeVmsByPriority(vms, cloudProviders, allocation, capacity, usedPes);
+    }
+
+    private void distributeVmsByPriority(List<Vm> vms,
+                                          List<CloudProvider> priorityProviders,
+                                          Map<CloudProvider, List<Vm>> allocation,
+                                          Map<CloudProvider, Integer> capacity,
+                                          Map<CloudProvider, Integer> usedPes) {
         for (Vm vm : vms) {
-            CloudProvider provider = cloudProviders.get(providerIndex % cloudProviders.size());
-            allocation.get(provider).add(vm);
-            providerIndex++;
+            CloudProvider provider = findProviderWithCapacity(priorityProviders, vm, capacity, usedPes, null);
+            if (provider != null) {
+                addVmWithCapacity(provider, vm, allocation, capacity, usedPes);
+            }
         }
+    }
+
+    private boolean addVmWithCapacity(CloudProvider provider,
+                                      Vm vm,
+                                      Map<CloudProvider, List<Vm>> allocation,
+                                      Map<CloudProvider, Integer> capacity,
+                                      Map<CloudProvider, Integer> usedPes) {
+        if (provider == null) {
+            return false;
+        }
+
+        int available = capacity.getOrDefault(provider, 0) - usedPes.getOrDefault(provider, 0);
+        int requiredPes = (int) vm.getPesNumber();
+        if (available < requiredPes) {
+            return false;
+        }
+
+        allocation.get(provider).add(vm);
+        usedPes.merge(provider, requiredPes, Integer::sum);
+        return true;
+    }
+
+    private CloudProvider findProviderWithCapacity(List<CloudProvider> providers,
+                                                   Vm vm,
+                                                   Map<CloudProvider, Integer> capacity,
+                                                   Map<CloudProvider, Integer> usedPes,
+                                                   CloudProvider exclude) {
+        for (CloudProvider provider : providers) {
+            if (exclude != null && provider.equals(exclude)) {
+                continue;
+            }
+            int available = capacity.getOrDefault(provider, 0) - usedPes.getOrDefault(provider, 0);
+            int requiredPes = (int) vm.getPesNumber();
+            if (available >= requiredPes) {
+                return provider;
+            }
+        }
+        return null;
+    }
+
+    private Map<CloudProvider, Integer> computeProviderPeCapacity() {
+        Map<CloudProvider, Integer> capacity = new HashMap<>();
+        for (CloudProvider provider : cloudProviders) {
+            Datacenter datacenter = provider.getDatacenter();
+        int totalPes = datacenter.getHostList().stream()
+            .mapToInt(host -> host.getPeList().size())
+                    .sum();
+            capacity.put(provider, totalPes);
+        }
+        return capacity;
+    }
+
+    private Map<CloudProvider, Integer> initializeUsedPes() {
+        Map<CloudProvider, Integer> usedPes = new HashMap<>();
+        cloudProviders.forEach(provider -> usedPes.put(provider, 0));
+        return usedPes;
     }
     
     /**

@@ -100,12 +100,20 @@ public class MultiCloudBroker extends DatacenterBrokerSimple {
 
     private Datacenter mapDatacenterForVm(final Datacenter lastDatacenter, final Vm vm) {
         CloudProvider.ProviderType type = vmToProvider.get(vm.getId());
-        if (type != null) {
-            Datacenter datacenter = providerDatacenters.get(type);
-            if (datacenter != null) {
-                return datacenter;
+        Datacenter preferred = type == null ? Datacenter.NULL : providerDatacenters.get(type);
+
+        if (preferred != Datacenter.NULL) {
+            if (lastDatacenter == Datacenter.NULL) {
+                return preferred;
+            }
+
+            if (preferred.equals(lastDatacenter)) {
+                // release preferred binding so the broker can fallback to another datacenter
+                vmToProvider.remove(vm.getId());
+                return super.defaultDatacenterMapper(lastDatacenter, vm);
             }
         }
+
         return super.defaultDatacenterMapper(lastDatacenter, vm);
     }
 

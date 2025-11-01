@@ -67,8 +67,8 @@ public class AdvancedMultiCloudSimulation {
         // Initialize simulation
         simulation = new CloudSimPlus();
         
-    // Create heterogeneous cloud infrastructure
-    createCloudInfrastructure();
+        // Create heterogeneous cloud infrastructure
+        createCloudInfrastructure();
         
         // Run multiple optimization scenarios
         runOptimizationScenarios();
@@ -257,7 +257,7 @@ public class AdvancedMultiCloudSimulation {
         vms.addAll(createVmCategory(vmId, 4, "Micro-Edge", 
                 1200, 1, 2048, 1000, 25000));
         
-    System.out.printf("   ✓ Created %d/%d VMs across 4 categories%n%n", vms.size(), TOTAL_VMS);
+        System.out.printf("   ✓ Created %d/%d VMs across 4 categories%n%n", vms.size(), TOTAL_VMS);
         return vms;
     }
     
@@ -309,7 +309,7 @@ public class AdvancedMultiCloudSimulation {
         cloudlets.addAll(createWorkloadCategory(cloudletId, 5, "Batch-Processing",
                 200000, 2, 2048, new UtilizationModelDynamic(0.7)));
         
-    System.out.printf("   ✓ Created %d/%d cloudlets across 5 workload types%n%n", cloudlets.size(), TOTAL_CLOUDLETS);
+        System.out.printf("   ✓ Created %d/%d cloudlets across 5 workload types%n%n", cloudlets.size(), TOTAL_CLOUDLETS);
         return cloudlets;
     }
     
