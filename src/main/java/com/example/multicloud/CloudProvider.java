@@ -4,7 +4,6 @@ import org.cloudsimplus.datacenters.Datacenter;
 import org.cloudsimplus.vms.Vm;
 import org.cloudsimplus.cloudlets.Cloudlet;
 
-import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 
@@ -234,6 +233,10 @@ public class CloudProvider {
     public Datacenter getDatacenter() { return datacenter; }
     public Map<String, Double> getPricingModel() { return pricingModel; }
     public Map<String, Object> getCharacteristics() { return characteristics; }
+
+    public boolean canHostVm(Vm vm) {
+        return datacenter.getHostList().stream().anyMatch(host -> host.isSuitableForVm(vm));
+    }
     
     @Override
     public String toString() {

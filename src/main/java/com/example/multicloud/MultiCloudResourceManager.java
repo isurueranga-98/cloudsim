@@ -1,9 +1,7 @@
 package com.example.multicloud;
 
-import org.cloudsimplus.brokers.DatacenterBroker;
 import org.cloudsimplus.cloudlets.Cloudlet;
 import org.cloudsimplus.vms.Vm;
-import org.cloudsimplus.datacenters.Datacenter;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -34,13 +32,14 @@ public class MultiCloudResourceManager {
     }
     
     private final List<CloudProvider> cloudProviders;
-    private final Map<DatacenterBroker, CloudProvider> brokerProviderMapping;
     private OptimizationStrategy currentStrategy;
     private final Map<String, Double> strategyWeights;
+    private int nextGeographicProviderIndex = 0;
+    private int nextLoadBalancingProviderIndex = 0;
+    private int nextCloudletRoundRobinIndex = 0;
     
     public MultiCloudResourceManager(List<CloudProvider> cloudProviders) {
         this.cloudProviders = new ArrayList<>(cloudProviders);
-        this.brokerProviderMapping = new HashMap<>();
         this.currentStrategy = OptimizationStrategy.BALANCED;
         this.strategyWeights = initializeStrategyWeights();
     }
@@ -141,13 +140,7 @@ public class MultiCloudResourceManager {
         Map<CloudProvider, Double> providerScores = new HashMap<>();
         
         for (CloudProvider provider : cloudProviders) {
-            double score = 
-                (provider.getCostEfficiencyScore() * strategyWeights.get("cost")) +
-                (provider.getPerformanceScore() * strategyWeights.get("performance")) +
-                ((100 - provider.getNetworkLatency()) * strategyWeights.get("latency")) +
-                (provider.getSlaUptime() * strategyWeights.get("reliability"));
-            
-            providerScores.put(provider, score);
+            providerScores.put(provider, computeBalancedScore(provider));
         }
         
         // Sort providers by composite score
@@ -156,7 +149,7 @@ public class MultiCloudResourceManager {
                 .collect(Collectors.toList());
         
         // Distribute VMs proportionally based on scores
-        int totalScore = providerScores.values().stream().mapToInt(Double::intValue).sum();
+        double totalScore = providerScores.values().stream().mapToDouble(Double::doubleValue).sum();
         int vmIndex = 0;
         
         for (CloudProvider provider : sortedProviders) {
@@ -172,6 +165,13 @@ public class MultiCloudResourceManager {
         while (vmIndex < vms.size()) {
             allocation.get(sortedProviders.get(0)).add(vms.get(vmIndex++));
         }
+    }
+
+    private double computeBalancedScore(CloudProvider provider) {
+        return (provider.getCostEfficiencyScore() * strategyWeights.get("cost")) +
+               (provider.getPerformanceScore() * strategyWeights.get("performance")) +
+               ((100 - provider.getNetworkLatency()) * strategyWeights.get("latency")) +
+               (provider.getSlaUptime() * strategyWeights.get("reliability"));
     }
     
     private void allocateVmsGeographically(List<Vm> vms, Map<CloudProvider, List<Vm>> allocation) {
@@ -226,6 +226,114 @@ public class MultiCloudResourceManager {
         allocateCloudletsByType(batchProcessing, allocation, "cost_effective");
         
         return allocation;
+    }
+
+    public CloudProvider selectProviderForVm(Vm vm, List<CloudProvider> providerCandidates) {
+        List<CloudProvider> candidates = (providerCandidates == null || providerCandidates.isEmpty())
+                ? new ArrayList<>(cloudProviders)
+                : new ArrayList<>(providerCandidates);
+
+        if (candidates.isEmpty()) {
+            throw new IllegalStateException("No cloud providers available for VM allocation.");
+        }
+
+        List<CloudProvider> suitableProviders = candidates.stream()
+                .filter(provider -> provider.canHostVm(vm))
+                .collect(Collectors.toList());
+
+        List<CloudProvider> providerPool = suitableProviders.isEmpty() ? candidates : suitableProviders;
+
+        switch (currentStrategy) {
+            case COST_MINIMIZATION:
+                return providerPool.stream()
+                        .max(Comparator.comparingInt(CloudProvider::getCostEfficiencyScore))
+                        .orElse(providerPool.get(0));
+            case PERFORMANCE_MAXIMIZATION:
+                return providerPool.stream()
+                        .max(Comparator.comparingInt(CloudProvider::getPerformanceScore))
+                        .orElse(providerPool.get(0));
+            case LATENCY_OPTIMIZATION:
+                return providerPool.stream()
+                        .min(Comparator.comparingDouble(CloudProvider::getNetworkLatency))
+                        .orElse(providerPool.get(0));
+            case GEOGRAPHIC_DISTRIBUTION:
+                CloudProvider geographicProvider = providerPool.get(nextGeographicProviderIndex % providerPool.size());
+                nextGeographicProviderIndex++;
+                return geographicProvider;
+            case LOAD_BALANCING:
+                CloudProvider loadBalancedProvider = providerPool.get(nextLoadBalancingProviderIndex % providerPool.size());
+                nextLoadBalancingProviderIndex++;
+                return loadBalancedProvider;
+            case BALANCED:
+            default:
+                return providerPool.stream()
+                        .max(Comparator.comparingDouble(this::computeBalancedScore))
+                        .orElse(providerPool.get(0));
+        }
+    }
+
+    public Vm selectVmForCloudlet(Cloudlet cloudlet,
+                                  List<Vm> candidateVms,
+                                  Map<Vm, CloudProvider> vmProviders) {
+        if (candidateVms == null || candidateVms.isEmpty()) {
+            return Vm.NULL;
+        }
+
+        List<Vm> suitableVms = candidateVms.stream()
+                .filter(vm -> vm.isSuitableForCloudlet(cloudlet))
+                .collect(Collectors.toList());
+
+        if (suitableVms.isEmpty()) {
+            suitableVms = new ArrayList<>(candidateVms);
+        }
+
+        if (currentStrategy == OptimizationStrategy.GEOGRAPHIC_DISTRIBUTION
+                || currentStrategy == OptimizationStrategy.LOAD_BALANCING) {
+            Vm roundRobinVm = suitableVms.get(nextCloudletRoundRobinIndex % suitableVms.size());
+            nextCloudletRoundRobinIndex++;
+            return roundRobinVm;
+        }
+
+        Map<Vm, CloudProvider> providersMap = vmProviders == null ? Collections.emptyMap() : vmProviders;
+
+        return suitableVms.stream()
+                .max(Comparator.comparingDouble(vm -> calculateVmScore(vm, cloudlet, providersMap)))
+                .orElse(suitableVms.get(0));
+    }
+
+    private double calculateVmScore(Vm vm,
+                                    Cloudlet cloudlet,
+                                    Map<Vm, CloudProvider> vmProviders) {
+        CloudProvider provider = resolveProviderForVm(vm, vmProviders);
+        double providerPerformance = provider != null ? provider.getPerformanceScore() : 0.0;
+        double costEfficiency = provider != null ? provider.getCostEfficiencyScore() : 0.0;
+        double latencyScore = provider != null ? (100.0 - provider.getNetworkLatency()) : 0.0;
+        double vmCpuScore = vm.getMips();
+        double vmRamScore = vm.getRam().getCapacity() / 1024.0;
+        double workloadWeight = cloudlet.getLength() / 1000.0 + cloudlet.getPesNumber();
+
+        switch (currentStrategy) {
+            case COST_MINIMIZATION:
+                return (costEfficiency * 1.5) - (vmCpuScore * 0.002) - (vmRamScore * 0.05);
+            case PERFORMANCE_MAXIMIZATION:
+                return (providerPerformance * 1.2) + (vmCpuScore * 0.01) + (vmRamScore * 0.1);
+            case LATENCY_OPTIMIZATION:
+                return (latencyScore * 1.5) + (vmCpuScore * 0.005);
+            case BALANCED:
+            default:
+                double balancedProvider = provider != null ? computeBalancedScore(provider) : 0.0;
+                return balancedProvider + (vmCpuScore * 0.006) + (vmRamScore * 0.08) - (workloadWeight * 0.02);
+        }
+    }
+
+    private CloudProvider resolveProviderForVm(Vm vm, Map<Vm, CloudProvider> vmProviders) {
+        if (vmProviders != null) {
+            CloudProvider provider = vmProviders.get(vm);
+            if (provider != null) {
+                return provider;
+            }
+        }
+        return cloudProviders.isEmpty() ? null : cloudProviders.get(0);
     }
     
     private void allocateCloudletsByType(List<Cloudlet> cloudlets, 

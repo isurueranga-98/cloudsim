@@ -1,9 +1,8 @@
 package com.example;
 
 import com.example.multicloud.CloudProvider;
+import com.example.multicloud.MultiCloudBroker;
 import com.example.multicloud.MultiCloudResourceManager;
-import org.cloudsimplus.brokers.DatacenterBroker;
-import org.cloudsimplus.brokers.DatacenterBrokerSimple;
 import org.cloudsimplus.builders.tables.CloudletsTableBuilder;
 import org.cloudsimplus.cloudlets.Cloudlet;
 import org.cloudsimplus.cloudlets.CloudletSimple;
@@ -40,8 +39,6 @@ import java.util.stream.IntStream;
 public class AdvancedMultiCloudSimulation {
     
     // Simulation configuration
-    private static final int TOTAL_VMS = 24;
-    private static final int TOTAL_CLOUDLETS = 48;
     private static final double SIMULATION_TIME = 7200; // 2 hours in seconds
     
     // Cloud provider host configurations
@@ -57,10 +54,6 @@ public class AdvancedMultiCloudSimulation {
     // Simulation components
     private final CloudSimPlus simulation;
     private List<CloudProvider> cloudProviders;
-    private MultiCloudResourceManager resourceManager;
-    private List<DatacenterBroker> brokers;
-    private List<Vm> allVms;
-    private List<Cloudlet> allCloudlets;
     
     public static void main(String[] args) {
         new AdvancedMultiCloudSimulation();
@@ -74,14 +67,11 @@ public class AdvancedMultiCloudSimulation {
         
         // Create heterogeneous cloud infrastructure
         createCloudInfrastructure();
-        
-        // Initialize resource manager with optimization strategies
-        resourceManager = new MultiCloudResourceManager(cloudProviders);
-        
-        // Create diverse workloads
-        allVms = createDiverseVmFleet();
-        allCloudlets = createVariedWorkloads();
-        
+
+        // Create diverse workloads (for reporting preview purposes)
+        createDiverseVmFleet();
+        createVariedWorkloads();
+
         // Run multiple optimization scenarios
         runOptimizationScenarios();
         
@@ -169,17 +159,17 @@ public class AdvancedMultiCloudSimulation {
     private HostConfiguration getHostConfiguration(CloudProvider.ProviderType type) {
         switch (type) {
             case AWS:
-                return new HostConfiguration(16, 3500, 65536, 25000, 4000000); // Premium
+                return new HostConfiguration(16, 4500, 65536, 25000, 4000000); // Premium compute headroom
             case AZURE:
-                return new HostConfiguration(12, 3000, 49152, 20000, 3000000); // Balanced
+                return new HostConfiguration(12, 3600, 49152, 20000, 3000000); // Balanced
             case GCP:
-                return new HostConfiguration(8, 2800, 32768, 15000, 2000000);  // Cost-effective
+                return new HostConfiguration(8, 3200, 32768, 15000, 2000000);  // Cost-effective
             case EDGE:
                 return new HostConfiguration(4, 2200, 16384, 5000, 1000000);   // Limited
             case ALIBABA:
-                return new HostConfiguration(10, 2600, 24576, 12000, 1500000); // Competitive
+                return new HostConfiguration(10, 2800, 24576, 12000, 1500000); // Competitive
             case IBM:
-                return new HostConfiguration(14, 3200, 57344, 22000, 3500000); // Enterprise
+                return new HostConfiguration(14, 4200, 57344, 22000, 3500000); // Enterprise
             default:
                 return new HostConfiguration(8, 2400, 16384, 10000, 1000000);
         }
@@ -371,26 +361,30 @@ public class AdvancedMultiCloudSimulation {
         // Update resource manager with new providers
         MultiCloudResourceManager scenarioResourceManager = new MultiCloudResourceManager(scenarioProviders);
         scenarioResourceManager.setCurrentStrategy(strategy);
-        
-        // Create new brokers for this scenario
-        brokers = createScenarioBrokers(scenarioSimulation);
-        
+
+        // Create broker coordinating all providers
+        MultiCloudBroker broker = new MultiCloudBroker(
+                scenarioSimulation,
+                strategy.name() + "-Broker",
+                scenarioResourceManager,
+                scenarioProviders);
+
         // Create fresh copies of VMs and cloudlets
         List<Vm> scenarioVms = createFreshVmCopies();
         List<Cloudlet> scenarioCloudlets = createFreshCloudletCopies();
-        
-        // Allocate resources using the strategy
-        Map<CloudProvider, List<Vm>> vmAllocation = scenarioResourceManager.allocateVms(scenarioVms);
-        Map<CloudProvider, List<Cloudlet>> cloudletAllocation = scenarioResourceManager.allocateCloudlets(scenarioCloudlets);
-        
-        // Submit resources to brokers
-        distributeResourcesToBrokers(vmAllocation, cloudletAllocation);
-        
+
+        // Submit workloads to the broker
+        broker.submitVmList(scenarioVms);
+        broker.submitCloudletList(scenarioCloudlets);
+
         // Run simulation
         scenarioSimulation.start();
-        
-        // Analyze and display results
-        analyzeScenarioResults(strategy, vmAllocation, cloudletAllocation);
+
+        // Collect realized allocations and analyze results
+        Map<CloudProvider, List<Vm>> realizedVmAllocation = broker.getRealizedVmAllocation();
+        Map<CloudProvider, List<Cloudlet>> realizedCloudletAllocation = broker.getRealizedCloudletAllocation();
+
+        analyzeScenarioResults(strategy, broker, scenarioResourceManager, realizedVmAllocation, realizedCloudletAllocation);
     }
     
     /**
@@ -446,62 +440,23 @@ public class AdvancedMultiCloudSimulation {
     }
     
     /**
-     * Creates brokers for each cloud provider
-     */
-    private List<DatacenterBroker> createScenarioBrokers(CloudSimPlus sim) {
-        List<DatacenterBroker> scenarioBrokers = new ArrayList<>();
-        
-        for (CloudProvider provider : cloudProviders) {
-            DatacenterBroker broker = new DatacenterBrokerSimple(sim);
-            broker.setName(provider.getType().name() + "-Broker");
-            scenarioBrokers.add(broker);
-        }
-        
-        return scenarioBrokers;
-    }
-    
-    /**
-     * Distributes allocated resources to appropriate brokers
-     */
-    private void distributeResourcesToBrokers(Map<CloudProvider, List<Vm>> vmAllocation,
-                                            Map<CloudProvider, List<Cloudlet>> cloudletAllocation) {
-        for (int i = 0; i < cloudProviders.size(); i++) {
-            CloudProvider provider = cloudProviders.get(i);
-            DatacenterBroker broker = brokers.get(i);
-            
-            List<Vm> providerVms = vmAllocation.getOrDefault(provider, new ArrayList<>());
-            List<Cloudlet> providerCloudlets = cloudletAllocation.getOrDefault(provider, new ArrayList<>());
-            
-            if (!providerVms.isEmpty()) {
-                broker.submitVmList(providerVms);
-            }
-            if (!providerCloudlets.isEmpty()) {
-                broker.submitCloudletList(providerCloudlets);
-            }
-        }
-    }
-    
-    /**
      * Analyzes and displays results for a scenario
      */
     private void analyzeScenarioResults(MultiCloudResourceManager.OptimizationStrategy strategy,
+                                      MultiCloudBroker broker,
+                                      MultiCloudResourceManager scenarioResourceManager,
                                       Map<CloudProvider, List<Vm>> vmAllocation,
                                       Map<CloudProvider, List<Cloudlet>> cloudletAllocation) {
         
         System.out.printf("📈 Analysis for %s Strategy:%n", strategy.name());
         
         // Collect all finished cloudlets
-        List<Cloudlet> allFinishedCloudlets = new ArrayList<>();
+        List<Cloudlet> allFinishedCloudlets = broker.getCloudletFinishedList();
         Map<String, Integer> providerCloudletCounts = new HashMap<>();
-        
-        for (int i = 0; i < brokers.size(); i++) {
-            DatacenterBroker broker = brokers.get(i);
-            CloudProvider provider = cloudProviders.get(i);
-            List<Cloudlet> finishedCloudlets = broker.getCloudletFinishedList();
-            
-            allFinishedCloudlets.addAll(finishedCloudlets);
-            providerCloudletCounts.put(provider.getType().name(), finishedCloudlets.size());
-        }
+        scenarioResourceManager.getCloudProviders().forEach(provider ->
+                providerCloudletCounts.put(provider.getType().name(), 0));
+        cloudletAllocation.forEach((provider, cloudlets) ->
+                providerCloudletCounts.put(provider.getType().name(), cloudlets.size()));
         
         // Display summary statistics
         if (!allFinishedCloudlets.isEmpty()) {
@@ -510,7 +465,7 @@ public class AdvancedMultiCloudSimulation {
                     .sum();
             
             double avgExecutionTime = totalExecutionTime / allFinishedCloudlets.size();
-            double totalCost = resourceManager.calculateTotalCost(vmAllocation, cloudletAllocation, SIMULATION_TIME);
+            double totalCost = scenarioResourceManager.calculateTotalCost(vmAllocation, cloudletAllocation, SIMULATION_TIME);
             
             System.out.printf("   • Total Cloudlets Completed: %d%n", allFinishedCloudlets.size());
             System.out.printf("   • Average Execution Time: %.2f seconds%n", avgExecutionTime);
@@ -524,7 +479,7 @@ public class AdvancedMultiCloudSimulation {
         }
         
         // Display optimization report
-        System.out.println(resourceManager.generateOptimizationReport(vmAllocation, cloudletAllocation));
+        System.out.println(scenarioResourceManager.generateOptimizationReport(vmAllocation, cloudletAllocation));
         
         // Display detailed cloudlet table for the first scenario
         if (strategy == MultiCloudResourceManager.OptimizationStrategy.COST_MINIMIZATION && 
